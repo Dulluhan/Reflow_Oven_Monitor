@@ -7,24 +7,27 @@ import sys, time, math, serial, threading
 from matplotlib._png import read_png
 from matplotlib.offsetbox import TextArea, DrawingArea, OffsetImage, \
      AnnotationBbox
-
+x=0
 xsize=400
 pause = True
 profiles = [[0,90,180,210,240,340],[20,150,210,235,240,20],
             [0,90,180,210,240,340],[20,150,180,208,180,20]]
 
+
 def data_gen():
+    global t
     t = data_gen.t
     while (True):
        if pause:
 	       t+=1
-	       val=200*math.sin(t*2.0*3.1415/50.0)
+	       val=100*math.sin(t*2.0*3.1415/50.0)+100
+	       #time.sleep(1)
        yield t, val
-       threading.Timer(1,data_gen).start()
+
 
 def run(data):
-    # update the data
     t,y = data
+    # update the data
     if (t>-1):
         xdata.append(t)
         ydata.append(y)
@@ -40,10 +43,13 @@ def onclick(event):
     global pause
     pause = not pause
 	#for pausing the graph when we need to 
+
 def exit(event):
     mng.full_screen_toggle()
+
 def quit(event):
     sys.exit(0)
+
 def func(label):
     if label == "SAC305": 
 	p0.set_visible(not p0.get_visible())
@@ -51,16 +57,22 @@ def func(label):
     elif label == "63Sn/37Pb": 
 	p1.set_visible(not p1.get_visible())
 	a1.set_visible(not a1.get_visible())
-    elif label == "Error Value": 
-       while t > 90:
+    plt.draw()
+
+def show(event):
+       l1.set_visible(not l1.get_visible())
+       l2.set_visible(not l2.get_visible())
+       if (t > 90):
 		e0.set_visible(not e0.get_visible())
-       while t > 180: 
+       if (t > 180): 
 		e1.set_visible(not e1.get_visible())
-       while t > 210:
+       if (t > 210):
 		e2.set_visible(not e2.get_visible())
-       while t > 240: 
+       if (t > 240): 
 		e3.set_visible(not e3.get_visible())
-    plt.draw()	
+       plt.draw()	
+
+
 
     
 ################# INITIAL ###########################
@@ -70,8 +82,8 @@ fig.canvas.mpl_connect('close_event', on_close_figure)
 ax = fig.add_subplot(111)
 plt.subplots_adjust(bottom=0.2) #adjust margin on the bottom
 plt.title('Inside Oven Temperature') #title
-plt.ylabel('temperature') #y label
-plt.xlabel('time') #x label 
+plt.ylabel('Temperature') #y label
+plt.xlabel('Time') #x label 
 line, = ax.plot([], [], lw=2)
 ax.set_ylim(0, 300)
 ax.set_xlim(0, xsize)
@@ -79,42 +91,57 @@ ax.grid()
 xdata, ydata = [], []	
 
 ################## BUTTONS #################
-axpause = plt.axes([0.7, 0.05, 0.1, 0.075]) #button position "a seperature plot"
+axpause = plt.axes([0.67, 0.05, 0.05, 0.05]) #button position "a seperature plot"
 bpause = Button(axpause,'Pause',color = u'0.85', hovercolor = u'0.95') #create button 
 bpause.on_clicked(onclick) #set action on click
 fig.canvas.mpl_connect('pause_event',onclick) #add global event
 
-axexit = plt.axes([0.48, 0.05, 0.2, 0.075]) #toggle button
+axexit = plt.axes([0.73, 0.05, 0.08, 0.05]) #toggle button
 bexit = Button(axexit,'Toggle Screen',color = u'0.85', hovercolor = u'0.95')
 bexit.on_clicked(exit)
 fig.canvas.mpl_connect('exit_event',exit)
 
-axquit = plt.axes([0.82, 0.05, 0.1, 0.075])
-bquit = Button(axquit,'Quit', color = u'0.85', hovercolor = u'0.95')
+axquit = plt.axes([0.82, 0.05, 0.05, 0.05])
+bquit = Button(axquit,'Quit', color = '#F0B2B2', hovercolor = '#E06666')
 bquit.on_clicked(quit)
 fig.canvas.mpl_connect("quit_event",quit)
 
+axshow = plt.axes([0.59,0.05,0.07,0.05])
+bshow = Button(axshow,'Show Error', color = u'0.85', hovercolor = u'0.95')
+bshow.on_clicked(show)
+fig.canvas.mpl_connect("show_error",show)
+
 ################# CHECKBOXES ################
 cxck = plt.axes([0.2,0.05, 0.2, 0.075]) #check position 
-check = CheckButtons(cxck,('SAC305','63Sn/37Pb','Error Value'),(False,False,False)) #create check boxes
+check = CheckButtons(cxck,('SAC305','63Sn/37Pb'),(False,False)) #create check boxes
+#cxtg = plt.axes([0.1,0.05,0.2,0.075])
+#tggle = CheckButtons(cxtg,('Show Error'),(False))
 
 ################# ITEMS TO TOGGLE WITH CHECKBOX #################
 p0, = ax.plot(profiles[0],profiles[1], visible = False, lw= 2) #plot profiles 
 a0 = ax.annotate(s="SAC305",xy=(273,166),xytext=(300,200),color = "green", arrowprops=dict(facecolor="green",shrink=0.01), visible = False) 
 p1, = ax.plot(profiles[2],profiles[3], visible = False, lw =2) #plot profiles http://goo.gl/RiW5l1
 a1 = ax.annotate(s="63Sn/37Pb",xy=(261,145),xytext=(300,160),color = "red", arrowprops=dict(facecolor="red",shrink=0.01), visible = False)
-e0 = ax.plot([100],[100],'o',visible=False)
-e1 = ax.plot([100],[110],'o',visible=False)
-e2 = ax.plot([100],[120],'o',visible=False)
-e3 = ax.plot([100],[130],'o',visible=False)
+
+l1 = plt.annotate(s = "Error Off", xy = (1,1), xytext = (2.01,0.84), color = 'red', visible = True)
+l2 = plt.annotate(s = "Error On", xy = (1,1), xytext = (2.01, 0.84), color = "green", visible = False) 
+
+e0, = ax.plot([90],[100],'o',visible=False)
+e1, = ax.plot([180],[110],'o',visible=False)
+e2, = ax.plot([210],[120],'o',visible=False)
+e3, = ax.plot([240],[130],'o',visible=False)
 
 # Important: Although blit=True makes graphing faster, we need blit=False to prevent
 # spurious lines to appear when resizing the stripchart.
 ax.plot ()
 ani = animation.FuncAnimation(fig, run, data_gen, blit=False, interval=100, repeat=False)
+
 check.on_clicked(func)
+#tggle.on_clicked(show)
+
 mng = plt.get_current_fig_manager()
-mng.full_screen_toggle()
+mng.full_screen_toggle()#Full Screen
+
 plt.show()
 
 
