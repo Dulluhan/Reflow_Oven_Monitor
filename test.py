@@ -16,7 +16,7 @@ global showerror
 showerror = False
 
 ser = serial.Serial(
- port='COM4',
+ port='COM3',
  baudrate=115200,
  parity=serial.PARITY_NONE,
  stopbits=serial.STOPBITS_TWO,
@@ -31,7 +31,7 @@ def data_gen():
        if pause:
            if (ser.readline() > 25 ):
     	       t+=1
-    	       val=ser.readline()
+    	       val=
     	       #time.sleep(1)
     	       setvis (not l1.get_visible())
            elif (ser.readline() < 25):

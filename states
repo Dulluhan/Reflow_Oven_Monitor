@@ -1,0 +1,1114 @@
+; Blinky_Int.asm: blinks LEDR0 of the DE2-8052 each second.
+; Also generates a 2kHz signal at P0.0 using timer 0 interrupt.
+; Also keeps a BCD counter using timer 2 interrupt.
+
+$MODDE2
+
+CLK EQU 33333333
+FREQ_2 EQU 2000
+FREQ_0 EQU 100
+TIMER0_RELOAD EQU 65536-(CLK/(12*FREQ_0))
+TIMER2_RELOAD EQU 65536-(CLK/(12*2*FREQ_2))
+TEN_ms_CONSTANT EQU 100 ; 1/100Hz = 10 ms
+TIMER1_RELOAD   EQU 65536-(CLK/(12*TEN_ms_CONSTANT))
+
+FREQ   EQU 33333333
+BAUD   EQU 115200
+T2LOAD EQU 65536-(FREQ/(32*BAUD))
+
+CE         EQU P0.3
+SCLK   EQU P0.2
+MOSI   EQU P0.1
+MISO   EQU P0.0
+
+BUZZER EQU P1.1
+LED        EQU P2.1 ;;;WRITE CODE FOR LED
+
+
+org 0000H
+        ljmp myprogram
+
+org 000BH
+        ljmp ISR_timer0
+
+org 001BH
+        ljmp ISR_timer1
+
+org 002BH
+        ljmp ISR_timer2
+
+DSEG at 30H
+sec: ds 1
+min: ds 1
+hour: ds 1
+ampm: ds 1
+ampm_alarm: ds 1
+store_sec1: ds 1
+store_sec2: ds 1
+store_min: ds 1
+store_hour: ds 1
+Cnt_10ms:  ds 1
+Cnt_10msTimer1: ds 1
+chan0: ds 1
+chan1: ds 1
+
+
+x:   ds 4
+y:   ds 4
+bcd: ds 5
+
+state: ds 1
+SoakTimeUserInSec: ds 1
+SoakTimeUserInMin: ds 1
+SoakTempUserIn: ds 1
+ReflowTimeUserInSec: ds 1
+ReflowTimeUserInMin: ds 1
+ReflowTempUserIn: ds 1
+TEMPERATURE1: ds 1
+TEMPERATURE1_MAX: ds 1
+pwm: ds 1
+StateStart: ds 1
+ERROR: ds 1
+TemperatureThermo: ds 1
+
+BSEG
+mf: dbit 1
+ChangeState: dbit 1
+RampToSoakCheck: dbit 1
+check2: dbit 1
+check3: dbit 1
+check4: dbit 1
+check5: dbit 1
+CE_ADC: dbit 1
+
+DoOnceEmergencyStop: dbit 1
+
+$include(Thermalcouple.asm)
+;$include(math32.asm)
+$include(LCDFILE.asm)
+
+CSEG
+
+; Look-up table for 7-segment displays
+myLUT:
+    DB 0C0H, 0F9H, 0A4H, 0B0H, 099H
+    DB 092H, 082H, 0F8H, 080H, 090H
+
+ISR_timer0:
+        push psw
+        push acc
+        push dpl
+        push dph
+
+        clr TF2
+
+        jb SWA.7, continuedown
+        jnb SWA.7, CheckInput
+
+CheckInput:
+        jb SWA.0, GoToSoakTime
+        jnb SWA.0, CheckSoakTemp
+
+CheckSoakTemp:
+        jb SWA.2, GoToSoakTemp
+        jnb SWA.2, CheckReflowTime
+
+CheckReflowTime:
+        jb SWA.1, GoToReflowTime
+        jnb SWA.1, CheckReflowTemp
+
+CheckReflowTemp:
+        jb SWA.3, GoToReflowTemp
+        jnb SWA.3, do_nothing
+
+GoToSoakTime:
+        lcall WriteSoakTime
+        ljmp SoakTime
+
+GoToSoakTemp:
+        lcall WriteSoakTemp
+        ljmp SoakTemp
+
+GoToReflowTime:
+        lcall WriteReflowTime
+        ljmp ReflowTime
+
+GoToReflowTemp:
+        lcall WriteReflowTemp
+        ljmp ReflowTemp
+
+continuedown:
+;       mov a , ERROR
+;       cjne a, #0, do_nothing
+
+        mov a, Cnt_10ms
+        inc a
+        mov Cnt_10ms, a
+
+        clr c
+
+        cjne a, #28, do_nothing ; count to 1 second
+
+        clr a
+
+        mov Cnt_10ms, #0
+
+        mov a, sec      ;increment seconds
+        add a, #1
+        da a
+        mov sec, a
+
+        clr c
+
+        cjne a, #60h, second ; check to see if 60 seconds have past, if not branch to second
+        mov sec, #0 ; if 60 seconds have passed, go back to 0
+
+        mov a, min      ;increment minutes
+        add a, #1
+        da a
+        mov min, a
+
+        clr c
+
+        cjne a, #60h, second ;check to see if 60 minutes have past, if not branch to second
+        mov min, #0     ;change minutes to 0
+
+second: ; displays the seconds in HEX 4 and 5
+
+        mov a, sec
+        mov dptr, #myLUT
+; Display Digit 0
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX4, A
+; Display Digit 2
+    mov A, sec
+    swap A
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX5, A
+
+minute: ;displays the minutes in HEXES 6 and 7
+        mov A, min
+        mov dptr, #myLUT
+; Display Digit 0
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX6, A
+; Display Digit 2
+    mov A, min
+    swap A
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX7, A
+
+        clr a
+
+do_nothing:
+        pop dph
+        pop dpl
+        pop acc
+        pop psw
+
+        reti
+
+
+ISR_timer1:
+  ; Any used register in this ISR must be saved in the stack
+    push acc
+    push psw ; The carry flag resides in the program status word register
+    push dph
+    push dpl
+
+        ; Timer 1 in 16-bit mode doesn't have autoreload.  So it is up
+        ; to us to reload the timer:
+    mov TH1, #high(TIMER1_RELOAD)
+    mov TL1, #low(TIMER1_RELOAD)
+
+
+    ; Increment the 10 ms counter.  If it is equal to 100 reset it to zero
+    inc Cnt_10msTimer1
+    mov a, Cnt_10msTimer1
+    cjne a, #100, No_reset_Cnt_10ms
+    mov Cnt_10msTimer1, #0
+
+No_reset_Cnt_10ms:
+
+        ; Compare the variable 'pwm' against 'Cnt_10ms' and change the output pin
+        ; accordingly: if Cnt_10ms<=pwm then P0.0=1 else P0.0=0
+        mov a, Cnt_10msTimer1
+        clr c ; Before subtraction we need to clear the 'borrow'
+        subb a, pwm
+        jc pwm_GT_Cnt_10ms ; After subtraction the carry is set if pwm>Cnt_10ms
+        clr P3.1
+        clr a
+        sjmp Done_PWM
+
+pwm_GT_Cnt_10ms:
+        setb P3.1
+
+Done_PWM:
+    ; Restore saved registers from the stack in reverse order
+    pop psw
+    pop acc
+    pop dpl
+    pop dph
+        reti
+
+ISR_timer2:
+
+        mov a, ChangeState      ; checks to see if the minutes is equal to the alarm minutes
+        cjne a, #0, CheckBuzzNext
+
+        cpl BUZZER
+        mov ChangeState, #1
+
+CheckBuzzNext:
+        mov a, state
+        cjne a, #1 , CheckOpenDoor
+
+        cpl BUZZER
+
+;;LONG BEEP
+CheckOpenDoor:
+;; 6 BEEPS when PCB IS COOL
+ NoAlarm:
+    mov TH2, #high(TIMER2_RELOAD)
+    mov TL2, #low(TIMER2_RELOAD)
+        reti
+
+
+DisplaySoakTempUser:
+        mov x+0, SoakTempUserIn
+        mov x+1, #0
+        mov x+2, #0
+        mov x+3, #0
+
+        lcall hex2bcd
+
+; displays the seconds in HEX 2 and 3
+        mov a, bcd+1
+        mov dptr, #myLUT
+; Display Digit 3
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX3, A
+; Display Digit 2
+        mov a, bcd+0
+        swap A
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX2, A
+; Display Digit 1
+        mov a, bcd+0
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX1, A
+
+        ret
+
+DisplaySoakTimeUser:
+        mov x+0, SoakTimeUserInSec
+        mov x+1, #0
+        mov x+2, #0
+        mov x+3, #0
+
+        lcall hex2bcd
+
+; displays the seconds in HEX 2 and 3
+        mov a, bcd
+        mov dptr, #myLUT
+; Display Digit 0
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX4, A
+; Display Digit 2
+    mov A, bcd
+    swap A
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX5, A
+
+        mov x+0, SoakTimeUserInMin
+        mov x+1, #0
+        mov x+2, #0
+        mov x+3, #0
+
+        lcall hex2bcd
+
+;displays the minutes in HEXES 6 and 7
+        mov A, bcd
+        mov dptr, #myLUT
+; Display Digit 0
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX6, A
+; Display Digit 2
+    mov A, bcd
+    swap A
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX7, A
+
+        ret
+
+DisplayReflowTimeUser:
+        mov x+0, ReflowTimeUserInSec
+        mov x+1, #0
+        mov x+2, #0
+        mov x+3, #0
+
+        lcall hex2bcd
+
+; displays the seconds in HEX 2 and 3
+        mov a, bcd
+        mov dptr, #myLUT
+; Display Digit 0
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX4, A
+; Display Digit 2
+    mov A, bcd
+    swap A
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX5, A
+
+        mov x+0, ReflowTimeUserInMin
+        mov x+1, #0
+        mov x+2, #0
+        mov x+3, #0
+
+        lcall hex2bcd
+
+;displays the minutes in HEXES 6 and 7
+        mov A, bcd
+        mov dptr, #myLUT
+; Display Digit 0
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX6, A
+; Display Digit 2
+    mov A, bcd
+    swap A
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX7, A
+
+        ret
+
+DisplayReflowTempUser:
+        mov x+0, ReflowTempUserIn
+        mov x+1, #0
+        mov x+2, #0
+        mov x+3, #0
+
+        lcall hex2bcd
+
+; displays the seconds in HEX 2 and 3
+        mov a, bcd+1
+        mov dptr, #myLUT
+; Display Digit 3
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX3, A
+; Display Digit 2
+        mov a, bcd+0
+        swap A
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX2, A
+; Display Digit 1
+        mov a, bcd+0
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX1, A
+
+        ret
+
+DisplayErrorHex:
+; displays the seconds in HEX 2 and 3
+        mov a, #00000110b
+    mov HEX3, A
+; Display Digit 2 #0FH
+        mov a, #10101111b
+    mov HEX2, A
+    mov HEX1, A
+        ret
+
+DisplayErrorHex7to4:
+; displays the seconds in HEX 2 and 3
+        mov a, #00000110b
+    mov HEX7, A
+    mov HEX5, A
+; Display Digit 2 #0FH
+        mov a, #10101111b
+    mov HEX6, A
+    mov HEX4, A
+        ret
+
+ClearDisplay:
+        mov a, #11111111b
+    mov HEX0, A
+    mov HEX1, A
+    mov HEX2, A
+    mov HEX3, A
+    mov HEX4, A
+    mov HEX5, A
+    mov HEX6, A
+    mov HEX7, A
+
+    ret
+
+;For a 33.33MHz clock, one cycle takes 30ns
+WaitHalfSec:
+        mov R2, #90
+L3: mov R1, #250
+L2: mov R0, #250
+L1: djnz R0, L1
+        djnz R1, L2
+        djnz R2, L3
+        ret
+
+myprogram:
+        mov SP, #7FH
+        mov LEDRA,#0
+        mov LEDRB,#0
+        mov LEDRC,#0
+        mov LEDG,#0
+;       mov P0MOD, #00000011B ; P0.0, P0.1 are outputs.  P0.1 is used for testing Timer 2!
+        setb P0.0
+
+        orl P0MOD, #00001000b ; make CE_ADC (P0.3) output
+
+    LCALL InitSerialPort
+    lcall INI_SPI
+
+    mov TMOD,  #00000001B ; GATE=0, C/T*=0, M1=0, M0=1: 16-bit timer
+        clr TR0 ; Disable timer 0
+        clr TF0
+    mov TH0, #high(TIMER0_RELOAD)
+    mov TL0, #low(TIMER0_RELOAD)
+
+    setb TR0 ; Enable timer 0
+    setb ET0 ; Enable timer 0 interrupt
+
+    ;----------;
+    mov T2CON, #00H ; Autoreload is enabled, work as a timer
+    clr TR2
+    clr TF2
+   ; Set up timer 2 to interrupt every 10ms
+    mov RCAP2H,#high(TIMER2_RELOAD)
+    mov RCAP2L,#low(TIMER2_RELOAD)
+    setb TR2
+    setb ET2
+
+;Initalize_Timer1:
+        mov a, TMOD
+        anl a, #00001111B ; Set the bits for timer 1 to zero.  Keep the bits of timer 0 unchanged.
+    orl a, #00010000B ; GATE=0, C/T*=0, M1=0, M0=1: 16-bit timer
+    mov TMOD, a
+        clr TR1 ; Disable timer 1
+        clr TF1
+    mov TH1, #high(TIMER1_RELOAD)
+    mov TL1, #low(TIMER1_RELOAD)
+    setb TR1 ; Enable timer 0
+    setb ET1 ; Enable timer 0 interrupt
+
+    ; sets the variables
+    mov state, #0
+    mov ChangeState, #1
+    mov SoakTimeUserInSec, #0 ;; 0 seconds initially                                    ;changed
+    mov SoakTimeUserInMin,#1  ;; 1 minute initially                                             ;changed
+    mov SoakTempUserIn, #140d  ;; 150 degrees initially
+    mov ReflowTimeUserInSec, #2Dh ;; 45s initially
+    mov ReflowTimeUserInMin, #0
+        mov ReflowTempUserIn, #216
+        mov StateStart, #0
+        mov pwm, #0
+
+    mov chan0, #0
+    mov chan1, #0
+
+        mov ERROR, #0
+        mov TemperatureThermo, #10 ;#50h ;;80 degrees
+
+    mov sec, #0
+    mov min, #0
+   ; mov store_sec1, #0h
+    ;mov store_sec2, #0h
+    mov store_min, #0h
+    mov Cnt_10ms, #0
+    mov Cnt_10msTimer1, #0
+
+        ;========================================================================
+        ;LCD initialization
+        setb LCD_ON
+    clr LCD_EN                                                          ;Default state of enable must be zero
+    lcall Wait40us_C
+
+    mov LCD_MOD, #0xff                                          ;Use LCD_DATA as output port
+    clr LCD_RW                                                          ;Only writing to the LCD in this code.
+
+        mov a, #0ch                                                     ;Display on command
+        lcall LCD_command_C
+        mov a, #38H                                                     ;8-bits interface, 2 lines, 5x7 characters
+        lcall LCD_command_C
+
+        lcall WriteInit
+        ;========================================================================
+    setb EA  ; Enable all interrupts
+
+forever:
+        mov a, state
+        lcall CheckCH0
+        lcall CheckCH1
+        lcall Sum_temp_and_display
+
+state0:
+        mov a, state
+        cjne a, #0, state1
+        mov pwm, #0
+
+        jb SWA.7, StartIt ;nothing is pushing button
+        jnb SWA.7, state0_done ;jump to same instruction
+
+StartIt:
+        mov sec, #0
+        mov min, #0
+        mov state, #1
+        lcall WriteRampToSoak
+
+state0_done:
+        clr a
+        ljmp forever
+
+state1:
+        mov a, state
+        cjne a, #1, state2
+        mov pwm, #100
+
+        jnb SWA.7, ErrorStopState1
+
+;       lcall DisplaySoakTimeUser2
+
+        ljmp CheckEmergencyStop
+
+EmergencyStopDone:
+        clr a
+
+        mov a, SoakTempUserIn
+        clr c
+        subb a, TemperatureThermo
+
+        clr a
+        jnc state1Done
+        clr c
+        mov state, #2           ;; Read thermo temperature at the end of every state !!
+        mov sec, #0
+        mov min, #0
+        lcall WriteRunSoak
+
+state1Done:
+        clr c
+        clr a
+        ljmp forever
+
+CheckEmergencyStop:
+        clr a
+
+        mov a, sec
+        clr c
+        subb a, #55
+
+        jc EmergencyStopDone
+
+        clr a
+
+        mov a, TemperatureThermo
+        clr c
+        subb a, #50
+
+        jnc EmergencyStopDone
+        clr c
+        ljmp EmergencyErrorStop
+
+ErrorStopState1:
+        clr a
+        clr c
+        ljmp ErrorStop
+
+state2:
+        mov a, state
+        cjne a, #2, state3
+
+        jnb SWA.7, ErrorStopState1
+
+        mov pwm, #20
+
+        ;lcall DisplaySoakTimeUser2                                             ;;;;;;
+
+        mov a, SoakTimeUserInMin
+
+        cjne a, min, State2Done
+
+        mov a, SoakTimeUserInSec
+        clr c
+        subb a, sec
+
+        clr a
+
+        jnc State2Done
+
+        clr c
+        clr a
+        mov state, #3
+        mov sec, #0
+        mov min, #0
+        lcall WriteRampToPeak
+
+State2Done:
+        clr c
+        clr a
+    ljmp forever
+
+state3:
+        mov a, state
+        cjne a, #3, state4
+
+        jnb SWA.7, ErrorStopState1
+        mov pwm, #100
+
+;       mov ChangeState, #0
+
+        mov a, ReflowTempUserIn
+        clr c
+        subb a, TemperatureThermo ;;TEMPERATURE FROM THE THERMOCOUPLE
+
+        clr a
+
+        jnc state3Done
+        clr c
+        mov state, #4
+        mov sec, #0
+        mov min, #0
+        lcall WriteReflow
+
+state3Done:
+        clr c
+        clr a
+        ljmp forever
+
+state4:
+        mov a, state
+        cjne a, #4, state5
+        jnb SWA.7, ErrorStopState1
+        mov pwm, #20
+
+        mov a, ReflowTimeUserInMin
+
+        cjne a, min, state4Done
+
+        mov a, ReflowTimeUserInSec
+        ;cjne a, sec, state4Done ;;CHANGE LATER
+        clr c
+        subb a, sec
+
+        clr a
+
+        jnc state4Done
+        clr c
+                                        ;;LONG BEEP AT END OF STATE
+        mov state, #5
+        mov min, #0
+        mov sec, #0
+        lcall WriteCooling
+
+state4Done:
+        clr c
+        ljmp forever
+
+state5:
+        mov a, state
+        cjne a, #5, state_done
+
+;       mov ChangeState, #0
+        jnb SWA.7, ErrorStop
+
+        mov pwm, #0
+
+        mov a,TemperatureThermo ;;50 degrees celsius
+        clr c
+        subb a, #50 ;;TEMPERATURE FROM THE THERMOCOUPLE
+        clr a
+
+        jnc state_done
+        clr c
+        mov state, #0
+        mov min, #0
+        mov sec, #0
+        lcall WriteDone
+        ljmp WaitForkeyPush
+
+                                                ;;6 BEEPS TO INDICATE PCB IS COLD
+state_done:
+        clr c
+        clr a
+        ljmp forever
+
+ErrorStop: ;;turns off the reflow oven
+        lcall WriteInit
+        mov pwm, #0
+        lcall ClearDisplay
+        mov state, #0
+        ljmp forever
+
+                                                                                                                                                                                                        ;dickbutt.jpg
+EmergencyErrorStop:
+
+        lcall WriteEmergencyStop
+        mov pwm, #0
+        lcall ClearDisplay
+        mov state, #0
+        mov ERROR, #1
+;       lcall WriteInit
+        sjmp WaitForkeyPush
+
+WaitForkeyPush:
+        lcall ClearDisplay
+        jb key.2, WaitForkeyPush ;nothing is pushing button
+        jnb key.2, ReadyToRestart
+
+ReadyToRestart:
+        lcall WriteInit
+        lcall ClearDisplay
+;       mov ERROR, #0
+        ljmp forever
+
+
+
+
+
+endit:
+        lcall WriteInit
+        pop dph
+        pop dpl
+        pop acc
+        pop psw
+        reti
+
+SoakTime:
+        lcall ClearDisplay
+        jnb SWA.0, endit
+        jb key.2, SoakTime ;nothing is pushing button
+        jnb key.2, SoakTimeNext
+
+SoakTimeNext:
+;; Display the current Soak Time
+        lcall DisplaySoakTimeUser
+
+        jb key.3, no_key3 ;nothing is pushing button
+        jnb key.3, $ ;jump to same instruction
+
+        mov a, SoakTimeUserInSec
+
+        cjne a, #0, Continue22
+        sjmp Loop
+
+Continue22:
+;       mov a, SoakTimeUserInSec
+        subb a, #5
+        mov SoakTimeUserInSec, a
+        lcall DisplaySoakTimeUser
+        sjmp no_key3
+
+Loop:
+        jb key.3, CheckNextKeyPressed ;nothing is pushing button
+        jnb key.3, $ ;jump to same instruction
+
+        mov SoakTimeUserInSec, #55
+        dec SoakTimeUserInMin
+
+        mov a, SoakTimeUserInMin
+        cjne a, #0, SoakTimeLowOk
+
+        lcall DisplayErrorHex7to4
+
+        inc SoakTimeUserInMin
+        mov SoakTimeUserInSec, #0
+        lcall WaitHalfSec
+        lcall DisplaySoakTimeUser
+
+SoakTimeLowOk:
+        lcall DisplaySoakTimeUser
+        sjmp no_key3
+
+CheckNextKeyPressed:
+        jb key.2, Loop ;nothing is pushing button
+        jnb key.2, $ ;jump to same instruction
+        mov SoakTimeUserInSec, #5
+
+        lcall DisplaySoakTimeUser
+no_key3:
+        jb key.2, no_key2 ;nothing is pushing button
+        jnb key.2, $ ;jump to same instruction
+
+        mov a, SoakTimeUserInSec
+        add a, #5
+        mov SoakTimeUserInSec, a
+
+        cjne a, #60, CheckSoakTimeHigh
+
+        inc SoakTimeUserInMin
+        mov SoakTimeUserInSec, #0
+
+CheckSoakTimeHigh:
+        mov a, SoakTimeUserInMin
+        cjne a, #2, SoakTimeHighOk
+
+        mov a, SoakTimeUserInSec
+        cjne a, #5, SoakTimeHighOk
+
+        lcall DisplayErrorHex7to4
+
+        ;dec SoakTimeUserInMin
+        mov SoakTimeUserInSec, #0
+        lcall WaitHalfSec
+
+SoakTimeHighOk:
+        lcall DisplaySoakTimeUser
+        sjmp no_key2
+no_key2:
+        jb key.1, SoakTimeNext ;nothing is pushing button
+        jnb key.1, $ ;jump to same instruction
+        ljmp SoakTime
+
+SoakTemp:
+        lcall ClearDisplay
+        jnb SWA.2, SoakTempEndNow
+        jb key.2, SoakTemp ;nothing is pushing button
+        jnb key.2, SoakTempNext
+
+SoakTempEndNow:
+        ljmp endit
+
+SoakTempNext:
+
+        jb key.3, no_keySoakTemp3 ;nothing is pushing button
+        jnb key.3, $ ;jump to same instruction
+
+        lcall DisplaySoakTempUser
+
+        mov a, SoakTempUserIn
+        cjne a, #130, SoakTempLowOk
+
+        sjmp TooLowSoakTempErr
+
+SoakTempLowOk:
+        mov a, SoakTempUserIn                   ;;;
+        subb a, #10
+        mov SoakTempUserIn, a
+
+        lcall DisplaySoakTempUser
+
+        sjmp no_keySoakTemp3
+
+TooLowSoakTempErr:
+        lcall DisplayErrorHex
+        lcall WaitHalfSec
+        lcall DisplaySoakTempUser
+
+no_keySoakTemp3:
+        jb key.2, no_keySoakTemp2 ;nothing is pushing button
+        jnb key.2, $ ;jump to same instruction
+
+        lcall DisplaySoakTempUser
+
+
+
+        mov a, SoakTempUserIn
+        cjne a, #170, SoakTempHighOk
+
+        sjmp SoakTempTooHigh
+
+SoakTempHighOk:
+        mov a, SoakTempUserIn
+        add a, #10
+        mov SoakTempUserIn, a
+
+        lcall DisplaySoakTempUser
+
+        sjmp no_keySoakTemp2
+
+SoakTempTooHigh:
+        lcall DisplayErrorHex
+        lcall WaitHalfSec
+        lcall DisplaySoakTempUser
+
+no_keySoakTemp2:
+        jb key.1, SoakTempNext
+        jnb key.1, SoakTemp
+
+ReflowTime:
+        lcall ClearDisplay
+        jnb SWA.1, FinishChecking
+        jb key.2, ReflowTime ;nothing is pushing button
+        jnb key.2, ReflowTimeNext
+
+FinishChecking:
+        lcall WriteInit
+        pop dph
+        pop dpl
+        pop acc
+        pop psw
+        reti
+
+ReflowTimeNext:
+        lcall DisplayReflowTimeUser
+
+        jb key.3, no_keyRTe3 ;nothing is pushing button
+        jnb key.3, $ ;jump to same instruction
+
+        mov a, ReflowTimeUserInSec
+        cjne a, #0, ContinueR
+        sjmp LoopR
+
+ContinueR:
+        mov a, ReflowTimeUserInSec
+        subb a, #5
+        mov ReflowTimeUserInSec, a
+
+        mov a, ReflowTimeUserInMin
+        cjne a, #0, ReflowTimeLowOk
+
+        mov a, ReflowTimeUserInSec
+        cjne a, #40, ReflowTimeLowOk
+
+        lcall DisplayErrorHex7to4
+
+        mov ReflowTimeUserInSec, #45
+        lcall WaitHalfSec
+
+ReflowTimeLowOk:
+        lcall DisplayReflowTimeUser
+        sjmp no_keyRTe3
+
+LoopR:
+        jb key.3, CheckNextKeyPressedRTe ;nothing is pushing button
+        jnb key.3, $ ;jump to same instruction
+
+        mov ReflowTimeUserInSec, #55
+        dec ReflowTimeUserInMin
+;       lcall DisplayReflowTimeUser
+        sjmp no_keyRTe3
+
+CheckNextKeyPressedRTe:
+        jb key.2, LoopR ;nothing is pushing button
+        jnb key.2, $ ;jump to same instruction
+        mov ReflowTimeUserInSec, #5
+
+        lcall DisplayReflowTimeUser
+
+no_keyRTe3:
+        jb key.2, no_keyRTe2 ;nothing is pushing button
+        jnb key.2, $ ;jump to same instruction
+
+        mov a, ReflowTimeUserInSec
+        add a, #5
+        mov ReflowTimeUserInSec, a
+
+        cjne a, #60, CheckReflowTimeHigh
+        inc ReflowTimeUserInMin
+        mov ReflowTimeUserInSec, #0
+        lcall DisplayReflowTimeUser
+
+CheckReflowTimeHigh:
+        mov a, ReflowTimeUserInMin
+        cjne a, #1, ReflowTimeHighOk
+
+        mov a, ReflowTimeUserInSec
+        cjne a, #20, ReflowTimeHighOk
+
+        lcall DisplayErrorHex7to4
+
+        ;dec SoakTimeUserInMin
+        mov ReflowTimeUserInSec, #15
+        lcall WaitHalfSec
+
+ReflowTimeHighOk:
+        lcall DisplayReflowTimeUser
+        sjmp no_keyRTe2
+
+no_keyRTe2:
+        jb key.1, ReflowTimeNext;nothing is pushing button
+        jnb key.1,GoBackToReflowTime
+
+GoBackToReflowTime:
+        ljmp ReflowTime ;jump to same instruction
+
+ReflowTemp:
+        lcall ClearDisplay
+        jnb SWA.3, ReflowTempEnd
+        jb key.2, ReflowTemp ;nothing is pushing button
+        jnb key.2, ReflowTempNext
+
+ReflowTempEnd:
+        lcall WriteInit
+        pop dph
+        pop dpl
+        pop acc
+        pop psw
+        reti
+
+ReflowTempNext:
+        jb key.3, no_keyReflowTemp3 ;nothing is pushing button
+        jnb key.3, $ ;jump to same instruction
+
+        lcall DisplayReflowTempUser
+
+        mov a, ReflowTempUserIn
+        cjne a, #207, ReflowTempLowOk
+
+        sjmp ReflowTempTooLowErr
+
+ReflowTempLowOk:
+        mov a, ReflowTempUserIn                 ;;;
+        subb a, #1
+        mov ReflowTempUserIn, a
+        lcall DisplayReflowTempUser
+
+        sjmp no_keyReflowTemp3
+
+ReflowTempTooLowErr:
+        lcall DisplayErrorHex
+        lcall WaitHalfSec
+        lcall DisplayReflowTempUser
+
+no_keyReflowTemp3:
+        jb key.2, no_keyReflowTemp2 ;nothing is pushing button
+        jnb key.2, $ ;jump to same instruction
+
+        lcall DisplaySoakTempUser
+
+        mov a, ReflowTempUserIn
+        cjne a, #227, ReflowTempHighOk
+
+        sjmp ReflowTempTooHighErr
+
+ReflowTempHighOk:
+        mov a, ReflowTempUserIn
+        add a, #1
+        mov ReflowTempUserIn, a
+        lcall DisplayReflowTempUser
+        sjmp no_keyReflowTemp2
+
+ReflowTempTooHighErr:
+        lcall DisplayErrorHex
+        lcall WaitHalfSec
+        lcall DisplayReflowTempUser
+
+no_keyReflowTemp2:
+        jb key.1, ReflowTempNext
+        jnb key.1, ReflowTemp
+
+END
