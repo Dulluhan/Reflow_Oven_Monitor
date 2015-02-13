@@ -1,29 +1,11 @@
-; Blinky_Int.asm: blinks LEDR0 of the DE2-8052 each second.
-; Also generates a 2kHz signal at P0.0 using timer 0 interrupt.
-; Also keeps a BCD counter using timer 2 interrupt.
-
 $MODDE2
+
 
 CLK EQU 33333333
 FREQ_2 EQU 2000
 FREQ_0 EQU 100
 TIMER0_RELOAD EQU 65536-(CLK/(12*FREQ_0))
-TIMER2_RELOAD EQU 65536-(CLK/(12*2*FREQ_2))
 TEN_ms_CONSTANT EQU 100 ; 1/100Hz = 10 ms
-TIMER1_RELOAD   EQU 65536-(CLK/(12*TEN_ms_CONSTANT))
-
-FREQ   EQU 33333333
-BAUD   EQU 115200
-T2LOAD EQU 65536-(FREQ/(32*BAUD))
-
-CE_ADC EQU P0.3
-SCLK   EQU P0.2
-MOSI   EQU P0.1
-MISO   EQU P0.0
-
-BUZZER EQU P1.1
-LED        EQU P2.1 ;;;WRITE CODE FOR LED
-
 
 org 0000H
         ljmp myprogram
@@ -31,27 +13,11 @@ org 0000H
 org 000BH
         ljmp ISR_timer0
 
-org 001BH
-        ljmp ISR_timer1
-
-org 002BH
-        ljmp ISR_timer2
 
 DSEG at 30H
 sec: ds 1
 min: ds 1
-hour: ds 1
-ampm: ds 1
-ampm_alarm: ds 1
-store_sec1: ds 1
-store_sec2: ds 1
-store_min: ds 1
-store_hour: ds 1
 Cnt_10ms:  ds 1
-Cnt_10msTimer1: ds 1
-chan0: ds 1
-chan1: ds 1
-
 
 x:   ds 4
 y:   ds 4
@@ -64,31 +30,20 @@ SoakTempUserIn: ds 1
 ReflowTimeUserInSec: ds 1
 ReflowTimeUserInMin: ds 1
 ReflowTempUserIn: ds 1
-TEMPERATURE1: ds 1
-TEMPERATURE1_MAX: ds 1
 pwm: ds 1
-StateStart: ds 1
-SecTimeErrorCheck: ds 1
-ERROR: ds 1
 TemperatureThermo: ds 1
 DegreeErrorCheck: ds 1
+SecTimeErrorCheck: ds 1
+ERROR: ds 1
 MinTempForPCBCold: ds 1
 
 BSEG
 mf: dbit 1
-ChangeState: dbit 1
 RampToSoakCheck: dbit 1
-check2: dbit 1
-check3: dbit 1
-check4: dbit 1
-check5: dbit 1
-;CE_ADC: dbit 1
 
-DoOnceEmergencyStop: dbit 1
-
-$include(Thermalcouple.asm)
-;$include(math32.asm)
+$include(math32.asm)
 $include(LCDFILE.asm)
+;$include(Thermalcouple.asm)
 
 CSEG
 
@@ -96,6 +51,11 @@ CSEG
 myLUT:
     DB 0C0H, 0F9H, 0A4H, 0B0H, 099H
     DB 092H, 082H, 0F8H, 080H, 090H
+
+    T_7seg:
+        DB 0C0H, 0F9H, 0A4H, 0B0H, 099H
+        DB 092H, 082H, 0F8H, 080H, 090H
+        DB 088H, 083H
 
 ISR_timer0:
         push psw
@@ -141,28 +101,23 @@ GoToReflowTemp:
         ljmp ReflowTemp
 
 continuedown:
-;       mov a , ERROR
-;       cjne a, #0, do_nothing
-
         mov a, Cnt_10ms
         inc a
         mov Cnt_10ms, a
 
         cjne a, #28, do_nothing ; count to 1 second
 
+        mov Cnt_10ms, #0
+
         mov a, TemperatureThermo
         add a , #1
         mov TemperatureThermo, a
-        clr a
-
-        mov Cnt_10ms, #0
 
         mov a, sec      ;increment seconds
         add a, #1
         da a
         mov sec, a
 
-;       lcall CheckCH0
 
         cjne a, #60h, second ; check to see if 60 seconds have past, if not branch to second
         mov sec, #0 ; if 60 seconds have passed, go back to 0
@@ -204,8 +159,6 @@ minute: ;displays the minutes in HEXES 6 and 7
     movc A, @A+dptr
     mov HEX7, A
 
-        clr a
-
 do_nothing:
         pop dph
         pop dpl
@@ -213,72 +166,6 @@ do_nothing:
         pop psw
 
         reti
-
-
-ISR_timer1:
-  ; Any used register in this ISR must be saved in the stack
-    push acc
-    push psw ; The carry flag resides in the program status word register
-    push dph
-    push dpl
-
-        ; Timer 1 in 16-bit mode doesn't have autoreload.  So it is up
-        ; to us to reload the timer:
-    mov TH1, #high(TIMER1_RELOAD)
-    mov TL1, #low(TIMER1_RELOAD)
-
-
-    ; Increment the 10 ms counter.  If it is equal to 100 reset it to zero
-    inc Cnt_10msTimer1
-    mov a, Cnt_10msTimer1
-    cjne a, #100, No_reset_Cnt_10ms
-    mov Cnt_10msTimer1, #0
-
-No_reset_Cnt_10ms:
-
-        ; Compare the variable 'pwm' against 'Cnt_10ms' and change the output pin
-        ; accordingly: if Cnt_10ms<=pwm then P0.0=1 else P0.0=0
-        mov a, Cnt_10msTimer1
-        clr c ; Before subtraction we need to clear the 'borrow'
-        subb a, pwm
-        jc pwm_GT_Cnt_10ms ; After subtraction the carry is set if pwm>Cnt_10ms
-        clr P3.1
-        clr a
-        sjmp Done_PWM
-
-pwm_GT_Cnt_10ms:
-        setb P3.1
-
-Done_PWM:
-    ; Restore saved registers from the stack in reverse order
-    pop psw
-    pop acc
-    pop dpl
-    pop dph
-        reti
-
-ISR_timer2:
-
-        mov a, ChangeState      ; checks to see if the minutes is equal to the alarm minutes
-        cjne a, #0, CheckBuzzNext
-
-        cpl BUZZER
-        mov ChangeState, #1
-
-CheckBuzzNext:
-        mov a, state
-        cjne a, #1 , CheckOpenDoor
-
-        cpl BUZZER
-
-;;LONG BEEP
-CheckOpenDoor:
-;; 6 BEEPS when PCB IS COOL
- NoAlarm:
-    mov TH2, #high(TIMER2_RELOAD)
-    mov TL2, #low(TIMER2_RELOAD)
-        reti
-
 
 DisplaySoakTempUser:
         mov x+0, SoakTempUserIn
@@ -337,6 +224,7 @@ DisplaySoakTimeUser:
         mov x+1, #0
         mov x+2, #0
         mov x+3, #0
+
         lcall hex2bcd
 
 ;displays the minutes in HEXES 6 and 7
@@ -352,7 +240,7 @@ DisplaySoakTimeUser:
     anl A, #0FH
     movc A, @A+dptr
     mov HEX7, A
-                clr a
+
         ret
 
 DisplayReflowTimeUser:
@@ -428,7 +316,53 @@ DisplayReflowTempUser:
     movc A, @A+dptr
     mov HEX1, A
 
-        clr a
+        ret
+DisplayReflowInSec:
+        mov x+0, ReflowTimeUserInSec
+        mov x+1, #0
+        mov x+2, #0
+        mov x+3, #0
+
+        lcall hex2bcd
+
+; displays the seconds in HEX 2 and 3
+        mov a, bcd
+        mov dptr, #myLUT
+; Display Digit 0
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX2, A
+; Display Digit 2
+    mov A, bcd
+    swap A
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX3, A
+
+        ret
+
+
+DisplaySoakTimeErrorCheck:              ;;;;
+        mov x+0, SecTimeErrorCheck
+        mov x+1, #0
+        mov x+2, #0
+        mov x+3, #0
+
+        lcall hex2bcd
+
+; displays the seconds in HEX 2 and 3
+        mov a, bcd+0
+        swap a
+        mov dptr, #myLUT
+; Display Digit 3
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX1, A
+; Display Digit 2
+        mov a, bcd+0
+    anl A, #0FH
+    movc A, @A+dptr
+    mov HEX0, A
         ret
 
 DisplayErrorHex:
@@ -452,11 +386,42 @@ DisplayErrorHex7to4:
     mov HEX6, A
     mov HEX4, A
 
-    clr a
+        ret
+
+
+DisplayTempThermo:
+        mov x+0, TemperatureThermo
+        mov x+1, #0
+        mov x+2, #0
+        mov x+3, #0
+
+        lcall hex2bcd
+    mov dptr, #T_7seg
+
+    mov a, bcd+1
+    ;swap a
+    anl a, #0FH
+    movc a, @a+dptr
+    mov HEX3, a
+
+    mov a, bcd+0
+    swap a
+    anl a, #0FH
+    movc a, @a+dptr
+    mov HEX2, a
+
+    mov a, bcd+0
+    ;swap a
+    anl a, #0FH
+    movc a, @a+dptr
+    mov HEX1, a
+
         ret
 
 
 ClearDisplay:
+        push psw
+        push acc
         mov a, #11111111b
     mov HEX0, A
     mov HEX1, A
@@ -467,7 +432,9 @@ ClearDisplay:
     mov HEX6, A
     mov HEX7, A
 
-    clr a
+    pop psw
+    pop acc
+
     ret
 
 ;For a 33.33MHz clock, one cycle takes 30ns
@@ -486,13 +453,6 @@ myprogram:
         mov LEDRB,#0
         mov LEDRC,#0
         mov LEDG,#0
-        mov P0MOD, #00001110B ; P0.0, P0.1 are outputs.  P0.1 is used for testing Timer 2!
-        setb P0.0
-
-;       orl P0MOD, #00001000b ; make CE_ADC (P0.3) output
-
-;    LCALL InitSerialPort
-    lcall INI_SPI
 
     mov TMOD,  #00000001B ; GATE=0, C/T*=0, M1=0, M0=1: 16-bit timer
         clr TR0 ; Disable timer 0
@@ -503,57 +463,22 @@ myprogram:
     setb TR0 ; Enable timer 0
     setb ET0 ; Enable timer 0 interrupt
 
-    ;----------;
-    mov T2CON, #00H ; Autoreload is enabled, work as a timer
-    clr TR2
-    clr TF2
-   ; Set up timer 2 to interrupt every 10ms
-    mov RCAP2H,#high(TIMER2_RELOAD)
-    mov RCAP2L,#low(TIMER2_RELOAD)
-    setb TR2
-    setb ET2
-
-;Initalize_Timer1:
-        mov a, TMOD
-        anl a, #00001111B ; Set the bits for timer 1 to zero.  Keep the bits of timer 0 unchanged.
-    orl a, #00010000B ; GATE=0, C/T*=0, M1=0, M0=1: 16-bit timer
-    mov TMOD, a
-        clr TR1 ; Disable timer 1
-        clr TF1
-    mov TH1, #high(TIMER1_RELOAD)
-    mov TL1, #low(TIMER1_RELOAD)
-    setb TR1 ; Enable timer 0
-    setb ET1 ; Enable timer 0 interrupt
-
-    ; sets the variables
-    mov state, #0
-    mov ChangeState, #1
-    mov SoakTimeUserInSec, #0 ;; 0 seconds initially                                    ;changed
+        mov state, #0
+        mov SoakTimeUserInSec, #0 ;; 0 seconds initially                                        ;changed
     mov SoakTimeUserInMin,#1  ;; 1 minute initially                                             ;changed
-    mov SoakTempUserIn, #140d  ;; 150 degrees initially
-    mov ReflowTimeUserInSec, #2Dh ;; 45s initially
+    mov SoakTempUserIn, #150d  ;; 150 degrees initially
+    mov ReflowTimeUserInSec, #45 ;; 45s initially
     mov ReflowTimeUserInMin, #0
-        mov ReflowTempUserIn, #216
-        mov StateStart, #0
+        mov ReflowTempUserIn, #217
         mov pwm, #0
-        mov MinTempForPCBCold, #50
-
-        mov SecTimeErrorCheck, #55
+        mov SecTimeErrorCheck, #55d
         mov DegreeErrorCheck, #50
 
-    mov chan0, #0
-    mov chan1, #0
+        mov MinTempForPCBCold, #50
 
-        mov ERROR, #0
-        mov TemperatureThermo, #130 ;#50h ;;80 degrees
+        mov TemperatureThermo, #100d
 
-    mov sec, #0
-    mov min, #0
-   ; mov store_sec1, #0h
-    ;mov store_sec2, #0h
-    mov store_min, #0h
-    mov Cnt_10ms, #0
-    mov Cnt_10msTimer1, #0
+        mov Cnt_10ms, #0
 
         ;========================================================================
         ;LCD initialization
@@ -577,6 +502,7 @@ myprogram:
 
 forever:
 ;       mov TemperatureTHermo, #40
+;       lcall DisplayTempThermo
 ;       lcall DisplaySoakTimeErrorCheck
 ;       lcall DisplayReflowInSec
         mov a, state
@@ -807,12 +733,12 @@ CheckEmergencyStop:
         cjne a, #1, CheckEmergencyStopIsDone
 
         mov x+0, TemperatureThermo
-        mov x+1, #0
+        mov x+1 , #0
         mov x+2, #0
         mov x+3, #0
 
         mov y+0, DegreeErrorCheck                       ;;50 degrees
-        mov x+1, #0
+        mov y+1, #0
         mov y+2, #0
         mov y+3, #0
 
@@ -835,6 +761,13 @@ EmergencyErrorStop:
         mov ERROR, #1
 ;       lcall WriteInit
         ljmp WaitForkeyPush
+
+
+
+
+
+
+
 
 endit:
         lcall WriteInit
@@ -1130,7 +1063,7 @@ ReflowTempTooLowErr:
         lcall DisplayErrorHex
         lcall WaitHalfSec
         lcall DisplayReflowTempUser
-       
+
 no_keyReflowTemp3:
         jb key.2, no_keyReflowTemp2 ;nothing is pushing button
         jnb key.2, $ ;jump to same instruction
